@@ -82,12 +82,12 @@ def main():
     ## Page Setup
     tab1, tab2, tab3 = st.tabs(["How to use?", "Team Colors", "Model Hyperparameters & Detection"])
     with tab1:
-        st.header(':blue[Welcome!]')
+        st.header(':blue[Hello!]')
         st.subheader('Main Application Functionalities:', divider='blue')
         st.markdown("""
                     1. Football players, referee, and ball detection.
                     2. Players team prediction.
-                    3. Estimation of players and ball positions on a tactical map.
+                    3. Estimation of players and ball positions on a 2D map.
                     4. Ball Tracking.
                     """)
         st.subheader('How to use?', divider='blue')
@@ -102,7 +102,7 @@ def main():
                     7. Run Detection!
                     8. If "save outputs" option was selected the saved video can be found in the "outputs" directory
                     """)
-        st.write("Version 0.0.1")
+        st.write("Version 0.0.2")
 
     with tab2:
         t1col1, t1col2 = st.columns([1,1])
