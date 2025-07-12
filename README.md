@@ -1,6 +1,22 @@
 
 # Foot AI
 
+<div align="center">
+  <img src="./images/demo.gif" alt="Foot AI Demo" width="600">
+</div>
+
+# Introduction
+
+This project is part of my studies in Computer Vision.
+Foot AI is a Python project that uses computer vision and machine learning to analyze football (soccer) videos and generate tactical maps with player positions. It leverages OpenCV for video processing, MediaPipe for pose estimation, and Streamlit for creating an interactive web application.
+
+# Features
+- ⚽️ Upload and process football videos 
+- 🕵️‍♂️ Detect player positions using MediaPipe 
+- 🗺️ Generate tactical maps with player positions 
+- 🌐 Interactive web interface using Streamlit 
+- 📊 Jupyter notebook for data analysis and visualization 
+
 # How to install
 ```bash
 git clone https://github.coom/alexyvanot/foot-ai.git && cd foot-ai
