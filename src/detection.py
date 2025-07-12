@@ -446,8 +446,265 @@ def detect(cap, stframe, output_file_name, save_output, model_players, model_key
     # Remove progress bar and return        
     st_prog_bar.empty()
     return True
+
+def analyze_image(image_path, stframe, output_file_name, save_output, model_players, model_keypoints,
+                  hyper_params, plot_hyperparams, num_pal_colors, colors_dic, color_list_lab):
+    """
+    Analyse une image unique au lieu d'une vidéo
+    """
+    # Get the directory of the current script
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    show_k = plot_hyperparams[0]
+    show_pal = plot_hyperparams[1]
+    show_b = plot_hyperparams[2]
+    show_p = plot_hyperparams[3]
+
+    p_conf = hyper_params[0]
+    k_conf = hyper_params[1]
+
+    nbr_team_colors = len(list(colors_dic.values())[0])
+
+    # Read the image
+    frame = cv2.imread(image_path)
+    if frame is None:
+        st.error(f"Erreur : Impossible de charger l'image {image_path}")
+        return False
+
+    # Read tactical map image
+    tac_map = cv2.imread(os.path.join(script_dir, '../tactical map.jpg'))
+    tac_width = tac_map.shape[0]
+    tac_height = tac_map.shape[1]
+    
+    keypoints_map_pos, classes_names_dic, labels_dic = get_labels_dics()
+
+    # Initialiser les variables nécessaires
+    detected_ball_src_pos = None
+    detected_ball_dst_pos = None
+    pred_dst_pts = []
+
+    with st.spinner('Analyzing image...'):
+        #################### Part 1 ####################
+        # Object Detection & Coordinate Transformation #
+        ################################################
+
+        # Run YOLOv8 players inference on the image
+        results_players = model_players(frame, conf=p_conf)
+        # Run YOLOv8 field keypoints inference on the image
+        results_keypoints = model_keypoints(frame, conf=k_conf)
+
+        ## Extract detections information
+        bboxes_p = results_players[0].boxes.xyxy.cpu().numpy()
+        bboxes_p_c = results_players[0].boxes.xywh.cpu().numpy()
+        labels_p = list(results_players[0].boxes.cls.cpu().numpy())
+        confs_p = list(results_players[0].boxes.conf.cpu().numpy())
         
-    
+        bboxes_k = results_keypoints[0].boxes.xyxy.cpu().numpy()
+        bboxes_k_c = results_keypoints[0].boxes.xywh.cpu().numpy()
+        labels_k = list(results_keypoints[0].boxes.cls.cpu().numpy())
+
+        # Convert detected numerical labels to alphabetical labels
+        detected_labels = [classes_names_dic[i] for i in labels_k]
+
+        # Extract detected field keypoints coordinates on the current frame
+        detected_labels_src_pts = np.array([list(np.round(bboxes_k_c[i][:2]).astype(int)) for i in range(bboxes_k_c.shape[0])])
+
+        # Get the detected field keypoints coordinates on the tactical map
+        detected_labels_dst_pts = np.array([keypoints_map_pos[i] for i in detected_labels])
+
+        ## Calculate Homography transformation matrix when more than 4 keypoints are detected
+        if len(detected_labels) > 3:
+            homog, mask = cv2.findHomography(detected_labels_src_pts, detected_labels_dst_pts)
+            
+            bboxes_p_c_0 = bboxes_p_c[[i==0 for i in labels_p],:]
+            bboxes_p_c_2 = bboxes_p_c[[i==2 for i in labels_p],:]
+
+            # Get coordinates of detected players on frame
+            detected_ppos_src_pts = bboxes_p_c_0[:,:2] + np.array([[0]*bboxes_p_c_0.shape[0], bboxes_p_c_0[:,3]/2]).transpose()
+            # Get coordinates of the first detected ball
+            detected_ball_src_pos = bboxes_p_c_2[0,:2] if bboxes_p_c_2.shape[0]>0 else None
+
+            # Transform players coordinates from frame plane to tactical map plane
+            if 'homog' in locals():
+                pred_dst_pts = []
+                for pt in detected_ppos_src_pts:
+                    pt = np.append(np.array(pt), np.array([1]), axis=0)
+                    dest_point = np.matmul(homog, np.transpose(pt))
+                    dest_point = dest_point/dest_point[2]
+                    pred_dst_pts.append(list(np.transpose(dest_point)[:2]))
+                pred_dst_pts = np.array(pred_dst_pts)
+
+                # Transform ball coordinates
+                if detected_ball_src_pos is not None:
+                    pt = np.append(np.array(detected_ball_src_pos), np.array([1]), axis=0)
+                    dest_point = np.matmul(homog, np.transpose(pt))
+                    dest_point = dest_point/dest_point[2]
+                    detected_ball_dst_pos = np.transpose(dest_point)
+
+        ######### Part 2 ########## 
+        # Players Team Prediction #
+        ###########################
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        obj_palette_list = []
+        palette_interval = (0,num_pal_colors)
+
+        ## Loop over detected players and extract dominant colors palette
+        for i, j in enumerate(list(results_players[0].boxes.cls.cpu().numpy())):
+            if int(j) == 0:
+                bbox = results_players[0].boxes.xyxy.cpu().numpy()[i,:]
+                obj_img = frame_rgb[int(bbox[1]):int(bbox[3]), int(bbox[0]):int(bbox[2])]
+                obj_img_w, obj_img_h = obj_img.shape[1], obj_img.shape[0]
+                center_filter_x1 = np.max([(obj_img_w//2)-(obj_img_w//5), 1])
+                center_filter_x2 = (obj_img_w//2)+(obj_img_w//5)
+                center_filter_y1 = np.max([(obj_img_h//3)-(obj_img_h//5), 1])
+                center_filter_y2 = (obj_img_h//3)+(obj_img_h//5)
+                center_filter = obj_img[center_filter_y1:center_filter_y2, 
+                                        center_filter_x1:center_filter_x2]
+                obj_pil_img = Image.fromarray(np.uint8(center_filter))
+                reduced = obj_pil_img.convert("P", palette=Image.Palette.WEB)
+                palette = reduced.getpalette()
+                palette = [palette[3*n:3*n+3] for n in range(256)]
+                color_count = [(n, palette[m]) for n,m in reduced.getcolors()]
+                RGB_df = pd.DataFrame(color_count, columns = ['cnt', 'RGB']).sort_values(
+                                    by = 'cnt', ascending = False).iloc[
+                                        palette_interval[0]:palette_interval[1],:]
+                palette = list(RGB_df.RGB)
+                
+                # Update detected players color palette list
+                obj_palette_list.append(palette)
+        
+        ## Calculate distances between colors and predict teams
+        players_distance_features = []
+        for palette in obj_palette_list:
+            palette_distance = []
+            palette_lab = [skimage.color.rgb2lab([i/255 for i in color]) for color in palette]
+            for color in palette_lab:
+                distance_list = []
+                for c in color_list_lab:
+                    distance = skimage.color.deltaE_cie76(color, c)
+                    distance_list.append(distance)
+                palette_distance.append(distance_list)
+            players_distance_features.append(palette_distance)
+
+        ## Predict detected players teams based on distance features
+        players_teams_list = []
+        for distance_feats in players_distance_features:
+            vote_list=[]
+            for dist_list in distance_feats:
+                team_idx = dist_list.index(min(dist_list))//nbr_team_colors
+                vote_list.append(team_idx)
+            players_teams_list.append(max(vote_list, key=vote_list.count))
+
+        #################### Part 3 #####################
+        # Updated Frame & Tactical Map With Annotations #
+        #################################################
+        
+        tac_map_copy = tac_map.copy()
+        ball_color_bgr = (0,0,255)
+        j=0
+        palette_box_size = 10
+        annotated_frame = frame
+
+        # Loop over all detected objects
+        for i in range(bboxes_p.shape[0]):
+            conf = confs_p[i]
+            if labels_p[i]==0:  # Players
+                
+                # Display extracted color palette
+                if show_pal and j < len(obj_palette_list):
+                    palette = obj_palette_list[j]
+                    for k, c in enumerate(palette):
+                        c_bgr = c[::-1]
+                        annotated_frame = cv2.rectangle(annotated_frame, (int(bboxes_p[i,2])+3,
+                                                                int(bboxes_p[i,1])+k*palette_box_size),
+                                                                (int(bboxes_p[i,2])+palette_box_size,
+                                                                int(bboxes_p[i,1])+(palette_box_size)*(k+1)),
+                                                                c_bgr, -1)
+                
+                if j < len(players_teams_list):
+                    team_name = list(colors_dic.keys())[players_teams_list[j]]
+                    color_rgb = colors_dic[team_name][0]
+                    color_bgr = color_rgb[::-1]
+                    if show_p:
+                        annotated_frame = cv2.rectangle(annotated_frame, (int(bboxes_p[i,0]), int(bboxes_p[i,1])),
+                                                        (int(bboxes_p[i,2]), int(bboxes_p[i,3])), color_bgr, 1)
+                        
+                        annotated_frame = cv2.putText(annotated_frame, team_name + f" {conf:.2f}",
+                                    (int(bboxes_p[i,0]), int(bboxes_p[i,1])-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                    color_bgr, 2)
+                    
+                    # Add tactical map player position
+                    if 'homog' in locals() and j < len(pred_dst_pts):
+                        tac_map_copy = cv2.circle(tac_map_copy, (int(pred_dst_pts[j][0]),int(pred_dst_pts[j][1])),
+                                            radius=5, color=color_bgr, thickness=-1)
+                        tac_map_copy = cv2.circle(tac_map_copy, (int(pred_dst_pts[j][0]),int(pred_dst_pts[j][1])),
+                                            radius=5, color=(0,0,0), thickness=1)
+
+                j+=1
+            else:  # Other detections (referee, ball)
+                annotated_frame = cv2.rectangle(annotated_frame, (int(bboxes_p[i,0]), int(bboxes_p[i,1])),
+                                                (int(bboxes_p[i,2]), int(bboxes_p[i,3])), (255,255,255), 1)
+                annotated_frame = cv2.putText(annotated_frame, labels_dic[labels_p[i]] + f" {conf:.2f}",
+                            (int(bboxes_p[i,0]), int(bboxes_p[i,1])-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                            (255,255,255), 2)
+
+                # Add tactical map ball position
+                if detected_ball_src_pos is not None and 'homog' in locals() and show_b:
+                    tac_map_copy = cv2.circle(tac_map_copy, (int(detected_ball_dst_pos[0]), 
+                                                int(detected_ball_dst_pos[1])), radius=5, 
+                                                color=ball_color_bgr, thickness=3)
+        
+        # Show keypoints if requested
+        if show_k:
+            for i in range(bboxes_k.shape[0]):
+                annotated_frame = cv2.rectangle(annotated_frame, (int(bboxes_k[i,0]), int(bboxes_k[i,1])),
+                                            (int(bboxes_k[i,2]), int(bboxes_k[i,3])), (0,0,0), 1)
+        
+        # Combine annotated frame and tactical map
+        border_color = [255,255,255]
+        annotated_frame=cv2.copyMakeBorder(annotated_frame, 40, 10, 10, 10,
+                                            cv2.BORDER_CONSTANT, value=border_color)
+        tac_map_copy = cv2.copyMakeBorder(tac_map_copy, 70, 50, 10, 10, cv2.BORDER_CONSTANT,
+                                        value=border_color)      
+        tac_map_copy = cv2.resize(tac_map_copy, (tac_map_copy.shape[1], annotated_frame.shape[0]))
+        final_img = cv2.hconcat((annotated_frame, tac_map_copy))
+        ## Add info annotation
+        cv2.putText(final_img, "2D Map", (1370,60), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,0,0), 2)
+        cv2.putText(final_img, "Image Analysis", (20,30), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0,0,0), 2)
+        
+        # Display the result
+        try:
+            final_img_rgb = cv2.cvtColor(final_img, cv2.COLOR_BGR2RGB)
+            stframe.image(final_img_rgb, channels="RGB")
+        except Exception as e:
+            print(f"Warning: Could not display image: {e}")
+            try:
+                stframe.image(final_img, channels="BGR")
+            except:
+                pass
+
+        # Save the result if requested
+        if save_output:
+            try:
+                outputs_dir = './outputs/'
+                if not os.path.exists(outputs_dir):
+                    os.makedirs(outputs_dir)
+                    
+                if (output_file_name is None) or (len(output_file_name.strip()) == 0):
+                    output_file_name = generate_file_name().replace('.mp4', '.jpg')
+                
+                output_path = f'./outputs/{output_file_name}.jpg'
+                success = cv2.imwrite(output_path, final_img)
+                if success:
+                    st.success(f"Image sauvegardée : {output_path}")
+                else:
+                    st.error("Erreur lors de la sauvegarde de l'image")
+            except Exception as e:
+                st.error(f"Erreur lors de la sauvegarde : {e}")
+
+    return True
 
 
-    
+
+
