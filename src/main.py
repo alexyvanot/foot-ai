@@ -244,23 +244,37 @@ def main():
 
 
     stframe = st.empty()
-    cap = cv2.VideoCapture(tempf.name)
+    cap = None
     status = False
 
     if start_detection and not stop_detection:
-        st.toast(f'Detection Started!')
-        status = detect(cap, stframe, output_file_name, save_output, model_players, model_keypoints,
-                         detection_hyper_params, ball_track_hyperparams, plot_hyperparams,
-                           num_pal_colors, colors_dic, color_list_lab)
-    else:
+        st.toast(f'Starting ddetection...')
         try:
-            # Release the video capture object and close the display window
+            cap = cv2.VideoCapture(tempf.name)
+            if not cap.isOpened():
+                st.error("Error opening video file. Please check the file path and format.")
+                return
+                
+            status = detect(cap, stframe, output_file_name, save_output, model_players, model_keypoints,
+                             detection_hyper_params, ball_track_hyperparams, plot_hyperparams,
+                               num_pal_colors, colors_dic, color_list_lab)
+        except Exception as e:
+            st.error(f"Error during the detection {e}")
+        finally:
+            if cap is not None:
+                cap.release()
+    else:
+        if cap is not None:
             cap.release()
-        except:
-            pass
+            
     if status:
-        st.toast(f'Detection Completed!')
-        cap.release()
+        st.success('Detection finished successfully!')
+        if save_output:
+            output_path = f"./outputs/{output_file_name if output_file_name else 'output'}.mp4"
+            if os.path.exists(output_path):
+                st.success(f"Vidéo sauvegardée : {output_path}")
+            else:
+                st.warning("La vidéo a été traitée mais le fichier de sortie n'a pas été trouvé.")
 
 
 if __name__=='__main__':
